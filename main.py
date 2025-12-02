@@ -70,7 +70,7 @@ def export_queries():
     zip_filename = os.path.join(result_folder, f"SACP_exports_{today}.zip")
 
     print("Connecting to PostgreSQL via SQLAlchemy...")
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         print("Connected.")
 
         # Query 1
