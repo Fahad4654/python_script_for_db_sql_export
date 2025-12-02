@@ -1,7 +1,42 @@
-.venv
-media
-result
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+*.egg
+*.log
 
+# --- Virtual environment ---
+env/
+venv/
 .venv/
-media/
+
+# --- OS Files ---
+.DS_Store
+Thumbs.db
+
+# --- IDE Files ---
+.vscode/
+.idea/
+*.iml
+
+# --- Export results ---
 result/
+*.xlsx
+*.csv
+*.zip
+
+# --- Config or sensitive files (if stored) ---
+*.env
+.env*
+config.json
+secrets.json
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Compiled cache ---
+build/
+dist/
