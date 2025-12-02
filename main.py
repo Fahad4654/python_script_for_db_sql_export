@@ -56,9 +56,8 @@ FOLDER_NAME = "SACP-export"
 SENDER_NAME = os.getenv("SENDER_NAME", "SACP Team")  # fallback if not provided
 RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "Recipient")  # fallback if not provided
 
-
 # -----------------------------
-# Export queries to Excel and zip
+# Export queries in CHUNKS
 # -----------------------------
 def export_queries():
     result_folder = "result"
@@ -70,20 +69,40 @@ def export_queries():
     zip_filename = os.path.join(result_folder, f"SACP_exports_{today}.zip")
 
     print("Connecting to PostgreSQL via SQLAlchemy...")
-    with engine.begin() as conn:
-        print("Connected.")
+    conn = engine.connect()
+    print("Connected.")
 
-        # Query 1
-        print("\nRunning Query 1...")
-        df1 = pd.read_sql(QUERY_1, conn)
-        df1.to_excel(file1, index=False)
-        print(f"Query 1 rows exported: {len(df1)}")
+    CHUNK = 50_000  # 50K rows per chunk
 
-        # Query 2
-        print("\nRunning Query 2...")
-        df2 = pd.read_sql(QUERY_2, conn)
-        df2.to_excel(file2, index=False)
-        print(f"Query 2 rows exported: {len(df2)}")
+    # --------------------------
+    # Query 1 → Chunked Export
+    # --------------------------
+    print("\nRunning Query 1 in chunks...")
+    with pd.ExcelWriter(file1, engine="openpyxl") as writer:
+        chunk_no = 1
+        startrow = 0
+        for chunk in pd.read_sql(QUERY_1, conn, chunksize=CHUNK):
+            print(f"Writing chunk {chunk_no} ({len(chunk)} rows)...")
+            chunk.to_excel(writer, index=False, sheet_name="Sheet1", startrow=startrow, header=(chunk_no == 1))
+            startrow += len(chunk) + 1  # add 1 row for spacing
+            chunk_no += 1
+
+    print(f"Query 1 exported in {chunk_no - 1} chunks.")
+
+    # --------------------------
+    # Query 2 → Chunked Export
+    # --------------------------
+    print("\nRunning Query 2 in chunks...")
+    with pd.ExcelWriter(file2, engine="openpyxl") as writer:
+        chunk_no = 1
+        startrow = 0
+        for chunk in pd.read_sql(QUERY_2, conn, chunksize=CHUNK):
+            print(f"Writing chunk {chunk_no} ({len(chunk)} rows)...")
+            chunk.to_excel(writer, index=False, sheet_name="Sheet1", startrow=startrow, header=(chunk_no == 1))
+            startrow += len(chunk) + 1
+            chunk_no += 1
+
+    print(f"Query 2 exported in {chunk_no - 1} chunks.")
 
     print("\nExcel files exported.")
 
@@ -91,10 +110,12 @@ def export_queries():
     with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
         zipf.write(file1, arcname=os.path.basename(file1))
         zipf.write(file2, arcname=os.path.basename(file2))
+
     print(f"ZIP created: {zip_filename}")
 
-    return zip_filename
+    conn.close()
 
+    return zip_filename
 
 # -----------------------------
 # Upload large file to OneDrive using upload session with retries
@@ -147,7 +168,6 @@ def upload_large_file(file_path, folder_name, headers, max_retries=5):
     file_id = resp.json()["id"]
     print(f"Large file uploaded successfully with ID: {file_id}")
     return file_id
-
 
 # -----------------------------
 # Upload ZIP to OneDrive and send email
@@ -233,7 +253,6 @@ def upload_and_email(zip_file_path):
         print("Email sent successfully with public download link!")
     else:
         print("Error sending email:", response.status_code, response.text)
-
 
 # -----------------------------
 # Main
