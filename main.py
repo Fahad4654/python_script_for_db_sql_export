@@ -53,12 +53,14 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL")
 CC_EMAIL = os.getenv("CC_EMAIL")  # optional
 FOLDER_NAME = "SACP-export"
-SENDER_NAME = os.getenv("SENDER_NAME", "SACP Team")  # fallback
-RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "Recipient")  # fallback
+SENDER_NAME = os.getenv("SENDER_NAME", "SACP Team")
+RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "Recipient")
 
 # -----------------------------
-# Export queries to Excel in chunks and zip
+# Export queries to Excel in chunks
 # -----------------------------
+CHUNK = 50_000  # rows per chunk
+
 def export_queries():
     result_folder = "result"
     os.makedirs(result_folder, exist_ok=True)
@@ -68,45 +70,36 @@ def export_queries():
     file2 = os.path.join(result_folder, f"Project_activity_{today}.xlsx")
     zip_filename = os.path.join(result_folder, f"SACP_exports_{today}.zip")
 
-    CHUNK = 50_000  # 50k rows per chunk
+    def write_query_to_excel(query, filename):
+        chunk_no = 1
+        startrow = 0
+        with pd.ExcelWriter(filename, engine="openpyxl") as writer:
+            while True:
+                try:
+                    with engine.connect() as conn:
+                        chunk_iter = pd.read_sql(query, conn, chunksize=CHUNK)
+                        has_data = False
+                        for chunk in chunk_iter:
+                            has_data = True
+                            print(f"Writing chunk {chunk_no} ({len(chunk)} rows)...")
+                            chunk.to_excel(writer, index=False, sheet_name="Sheet1", startrow=startrow, header=(startrow==0))
+                            startrow += len(chunk)
+                            chunk_no += 1
+                        if not has_data:
+                            break
+                    break  # finished all chunks
+                except Exception as e:
+                    print(f"Error during export chunk {chunk_no}, retrying in 5s:", e)
+                    time.sleep(5)
 
-    # Query 1
     print("\nRunning Query 1 in chunks...")
-    with pd.ExcelWriter(file1, engine="openpyxl") as writer:
-        chunk_no = 1
-        startrow = 0
-        try:
-            with engine.connect() as conn:
-                for chunk in pd.read_sql(QUERY_1, conn, chunksize=CHUNK):
-                    if len(chunk) == 0:
-                        continue
-                    print(f"Writing chunk {chunk_no} ({len(chunk)} rows)...")
-                    chunk.to_excel(writer, index=False, sheet_name="Sheet1", startrow=startrow, header=(chunk_no==1))
-                    startrow += len(chunk) + 1
-                    chunk_no += 1
-        except Exception as e:
-            print("Error during Query 1 export:", e)
+    write_query_to_excel(QUERY_1, file1)
 
-    # Query 2
     print("\nRunning Query 2 in chunks...")
-    with pd.ExcelWriter(file2, engine="openpyxl") as writer:
-        chunk_no = 1
-        startrow = 0
-        try:
-            with engine.connect() as conn:
-                for chunk in pd.read_sql(QUERY_2, conn, chunksize=CHUNK):
-                    if len(chunk) == 0:
-                        continue
-                    print(f"Writing chunk {chunk_no} ({len(chunk)} rows)...")
-                    chunk.to_excel(writer, index=False, sheet_name="Sheet1", startrow=startrow, header=(chunk_no==1))
-                    startrow += len(chunk) + 1
-                    chunk_no += 1
-        except Exception as e:
-            print("Error during Query 2 export:", e)
+    write_query_to_excel(QUERY_2, file2)
 
     print("\nExcel files exported.")
 
-    # Create ZIP
     print("Creating ZIP...")
     with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
         zipf.write(file1, arcname=os.path.basename(file1))
@@ -116,7 +109,7 @@ def export_queries():
     return zip_filename
 
 # -----------------------------
-# Upload large file to OneDrive using upload session with retries
+# Upload large file to OneDrive in chunks
 # -----------------------------
 def upload_large_file(file_path, folder_name, headers, max_retries=5):
     import time as t
@@ -162,18 +155,21 @@ def upload_large_file(file_path, folder_name, headers, max_retries=5):
     return file_id
 
 # -----------------------------
-# Upload ZIP to OneDrive and send email
+# Upload ZIP and send email
 # -----------------------------
 def upload_and_email(zip_file_path):
     authority = f"https://login.microsoftonline.com/{TENANT_ID}"
     app = ConfidentialClientApplication(
         CLIENT_ID, authority=authority, client_credential=CLIENT_SECRET
     )
-    token_response = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+    token_response = app.acquire_token_for_client(
+        scopes=["https://graph.microsoft.com/.default"]
+    )
     access_token = token_response.get("access_token")
     if not access_token:
         print("Failed to obtain access token")
         exit(1)
+
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
     # Ensure folder exists
@@ -218,7 +214,7 @@ def upload_and_email(zip_file_path):
             <p>Kindly ensure to download the file at your earliest convenience.</p>
             <p>Best regards,<br/>
             {SENDER_NAME}</p>
-            """
+            """,
             },
             "toRecipients": [{"emailAddress": {"address": RECIPIENT_EMAIL}}],
             "ccRecipients": ([{"emailAddress": {"address": CC_EMAIL}}] if CC_EMAIL else []),
