@@ -1,0 +1,7 @@
+.venv
+media
+result
+
+.venv/
+media/
+result/
