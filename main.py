@@ -53,11 +53,11 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL")
 CC_EMAIL = os.getenv("CC_EMAIL")  # optional
 FOLDER_NAME = "SACP-export"
-SENDER_NAME = os.getenv("SENDER_NAME", "SACP Team")  # fallback if not provided
-RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "Recipient")  # fallback if not provided
+SENDER_NAME = os.getenv("SENDER_NAME", "SACP Team")  # fallback
+RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "Recipient")  # fallback
 
 # -----------------------------
-# Export queries in CHUNKS
+# Export queries to Excel in chunks and zip
 # -----------------------------
 def export_queries():
     result_folder = "result"
@@ -68,53 +68,51 @@ def export_queries():
     file2 = os.path.join(result_folder, f"Project_activity_{today}.xlsx")
     zip_filename = os.path.join(result_folder, f"SACP_exports_{today}.zip")
 
-    print("Connecting to PostgreSQL via SQLAlchemy...")
-    conn = engine.connect()
-    print("Connected.")
+    CHUNK = 50_000  # 50k rows per chunk
 
-    CHUNK = 50_000  # 50K rows per chunk
-
-    # --------------------------
-    # Query 1 → Chunked Export
-    # --------------------------
+    # Query 1
     print("\nRunning Query 1 in chunks...")
     with pd.ExcelWriter(file1, engine="openpyxl") as writer:
         chunk_no = 1
         startrow = 0
-        for chunk in pd.read_sql(QUERY_1, conn, chunksize=CHUNK):
-            print(f"Writing chunk {chunk_no} ({len(chunk)} rows)...")
-            chunk.to_excel(writer, index=False, sheet_name="Sheet1", startrow=startrow, header=(chunk_no == 1))
-            startrow += len(chunk) + 1  # add 1 row for spacing
-            chunk_no += 1
+        try:
+            with engine.connect() as conn:
+                for chunk in pd.read_sql(QUERY_1, conn, chunksize=CHUNK):
+                    if len(chunk) == 0:
+                        continue
+                    print(f"Writing chunk {chunk_no} ({len(chunk)} rows)...")
+                    chunk.to_excel(writer, index=False, sheet_name="Sheet1", startrow=startrow, header=(chunk_no==1))
+                    startrow += len(chunk) + 1
+                    chunk_no += 1
+        except Exception as e:
+            print("Error during Query 1 export:", e)
 
-    print(f"Query 1 exported in {chunk_no - 1} chunks.")
-
-    # --------------------------
-    # Query 2 → Chunked Export
-    # --------------------------
+    # Query 2
     print("\nRunning Query 2 in chunks...")
     with pd.ExcelWriter(file2, engine="openpyxl") as writer:
         chunk_no = 1
         startrow = 0
-        for chunk in pd.read_sql(QUERY_2, conn, chunksize=CHUNK):
-            print(f"Writing chunk {chunk_no} ({len(chunk)} rows)...")
-            chunk.to_excel(writer, index=False, sheet_name="Sheet1", startrow=startrow, header=(chunk_no == 1))
-            startrow += len(chunk) + 1
-            chunk_no += 1
-
-    print(f"Query 2 exported in {chunk_no - 1} chunks.")
+        try:
+            with engine.connect() as conn:
+                for chunk in pd.read_sql(QUERY_2, conn, chunksize=CHUNK):
+                    if len(chunk) == 0:
+                        continue
+                    print(f"Writing chunk {chunk_no} ({len(chunk)} rows)...")
+                    chunk.to_excel(writer, index=False, sheet_name="Sheet1", startrow=startrow, header=(chunk_no==1))
+                    startrow += len(chunk) + 1
+                    chunk_no += 1
+        except Exception as e:
+            print("Error during Query 2 export:", e)
 
     print("\nExcel files exported.")
 
+    # Create ZIP
     print("Creating ZIP...")
     with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
         zipf.write(file1, arcname=os.path.basename(file1))
         zipf.write(file2, arcname=os.path.basename(file2))
 
     print(f"ZIP created: {zip_filename}")
-
-    conn.close()
-
     return zip_filename
 
 # -----------------------------
@@ -128,11 +126,7 @@ def upload_large_file(file_path, folder_name, headers, max_retries=5):
     session_payload = {"item": {"@microsoft.graph.conflictBehavior": "replace"}}
     session_resp = requests.post(session_url, headers=headers, json=session_payload)
     if session_resp.status_code not in (200, 201):
-        print(
-            "Error creating upload session:",
-            session_resp.status_code,
-            session_resp.text,
-        )
+        print("Error creating upload session:", session_resp.status_code, session_resp.text)
         exit(1)
 
     upload_url = session_resp.json()["uploadUrl"]
@@ -156,10 +150,8 @@ def upload_large_file(file_path, folder_name, headers, max_retries=5):
                     print(f"Uploaded {start}/{file_size} bytes ({progress:.2f}%)")
                 else:
                     attempt += 1
-                    wait_time = 2**attempt  # exponential backoff
-                    print(
-                        f"Chunk upload failed (attempt {attempt}/{max_retries}). Retrying in {wait_time}s..."
-                    )
+                    wait_time = 2**attempt
+                    print(f"Chunk upload failed (attempt {attempt}/{max_retries}). Retrying in {wait_time}s...")
                     t.sleep(wait_time)
             if not success:
                 print("Failed to upload chunk after maximum retries.")
@@ -173,35 +165,23 @@ def upload_large_file(file_path, folder_name, headers, max_retries=5):
 # Upload ZIP to OneDrive and send email
 # -----------------------------
 def upload_and_email(zip_file_path):
-    # Authenticate MS Graph
     authority = f"https://login.microsoftonline.com/{TENANT_ID}"
     app = ConfidentialClientApplication(
         CLIENT_ID, authority=authority, client_credential=CLIENT_SECRET
     )
-    token_response = app.acquire_token_for_client(
-        scopes=["https://graph.microsoft.com/.default"]
-    )
+    token_response = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
     access_token = token_response.get("access_token")
     if not access_token:
         print("Failed to obtain access token")
         exit(1)
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
     # Ensure folder exists
     folder_check_url = f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}/drive/root:/{FOLDER_NAME}"
     folder_resp = requests.get(folder_check_url, headers=headers)
     if folder_resp.status_code == 404:
-        create_folder_url = (
-            f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}/drive/root/children"
-        )
-        payload = {
-            "name": FOLDER_NAME,
-            "folder": {},
-            "@microsoft.graph.conflictBehavior": "fail",
-        }
+        create_folder_url = f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}/drive/root/children"
+        payload = {"name": FOLDER_NAME, "folder": {}, "@microsoft.graph.conflictBehavior": "fail"}
         resp = requests.post(create_folder_url, headers=headers, json=payload)
         if resp.status_code not in (201, 409):
             print("Error creating folder:", resp.status_code, resp.text)
@@ -238,12 +218,10 @@ def upload_and_email(zip_file_path):
             <p>Kindly ensure to download the file at your earliest convenience.</p>
             <p>Best regards,<br/>
             {SENDER_NAME}</p>
-            """,
+            """
             },
             "toRecipients": [{"emailAddress": {"address": RECIPIENT_EMAIL}}],
-            "ccRecipients": (
-                [{"emailAddress": {"address": CC_EMAIL}}] if CC_EMAIL else []
-            ),
+            "ccRecipients": ([{"emailAddress": {"address": CC_EMAIL}}] if CC_EMAIL else []),
         },
         "saveToSentItems": "true",
     }
